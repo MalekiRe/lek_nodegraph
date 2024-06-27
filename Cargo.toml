@@ -1,0 +1,13 @@
+[package]
+name = "bevy_lek_scripting"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { path = "../bevy_function_reflection"}
+bevy_egui = { path = "../bevy_egui" }
+egui-snarl = { git = "https://github.com/zakarumych/egui-snarl", features = ["serde", "egui-probe"] }
+egui-probe = "0.2.0"
+serde_json = { version = "1.0" }
+serde = { version = "1.0.203", features = ["derive"] }
+bevy-inspector-egui = { path = "../bevy-inspector-egui_reflect_function/crates/bevy-inspector-egui"}
