@@ -68,7 +68,9 @@ fn print_transforms(transforms: Query<(Entity, &Transform), Changed<Transform>>)
 fn run_vm_system(world: &mut World) {
     world.resource_scope(|world, snarl: Mut<SnarlResource>| {
         let instructions = crate::compiler::compile(&snarl.0);
-        run(instructions, world);
+        let mut function_registry = world.remove_non_send_resource::<FunctionRegistry>().unwrap();
+        run(instructions, &mut function_registry, world);
+        world.insert_non_send_resource(function_registry);
     });
 }
 
@@ -82,6 +84,7 @@ fn show_egui(
     function_registry: NonSend<FunctionRegistry>,
     mut type_registry: ResMut<AppTypeRegistry>,
     component_map: Res<ComponentMap>,
+    transforms: Query<(Entity, &Transform)>
 ) {
     let mut viewer = crate::scripting::Viewer {
         function_registry: Some(&function_registry),
@@ -90,14 +93,21 @@ fn show_egui(
     };
     let style = SnarlStyle::default();
     bevy_egui::egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
-        ui.label("world");
-        if ui.button("run").clicked() {
+        snarl.0
+            .show(&mut viewer, &style, bevy_egui::egui::Id::new("snarl"), ui);
+    });
+
+    bevy_egui::egui::SidePanel::left("left_panel").show(contexts.ctx_mut(), |ui| {
+        if ui.button("compile and run script").clicked() {
             commands.run_system(unsafe {
                 SYSTEM_ID.unwrap()
             });
         }
-        snarl.0
-            .show(&mut viewer, &style, bevy_egui::egui::Id::new("snarl"), ui);
+        for (e, t) in transforms.iter() {
+            ui.collapsing(format!("{}", e), |ui| {
+                bevy_inspector_egui::reflect_inspector::ui_for_value_readonly(t, ui, &*viewer.type_registry.as_ref().unwrap().read());
+            });
+        }
     });
 }
 

@@ -9,6 +9,7 @@ use bevy::reflect::func::{Arg, ArgList, Return};
 use bevy::reflect::{ReflectFromPtr, ReflectMut, ReflectRef, TypeInfo};
 use crate::{functions};
 use crate::indirect_stack::{IndirectStack, StackValue};
+use crate::registry::FunctionRegistry;
 
 #[derive(Debug)]
 pub enum Bytecode<'a> {
@@ -45,13 +46,12 @@ impl Clone for Bytecode<'_> {
 }
 
 
-pub fn run(mut instructions: Vec<Bytecode>, world: &mut World) {
+pub fn run(mut instructions: Vec<Bytecode>, function_registry: &mut FunctionRegistry, world: &mut World) {
 
     //println!("{:#?}", instructions);
 
     world.resource_scope(|world, registry: Mut<AppTypeRegistry>| {
-        let registry = registry.read();
-        let mut functions = functions();
+        let registry = registry.read();;
 
         // first instruction is a query
         match instructions.remove(0) {
@@ -91,9 +91,10 @@ pub fn run(mut instructions: Vec<Bytecode>, world: &mut World) {
                                 indirect_stack.pop();
                             }
                             Bytecode::Call(function) => {
-                                let (func, arg_number) = functions.get_mut(&function).unwrap();
+                                let func = function_registry.0.get_mut(&function).unwrap();
+                                let arg_number = func.info().arg_count();
                                 let mut args = ArgList::new();
-                                for _ in 0..*arg_number {
+                                for _ in 0..arg_number {
                                     args = args.push(match indirect_stack.pop().unwrap() {
                                         StackValue::Owned(awa) => {
                                             Arg::Owned(awa)

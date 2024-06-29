@@ -82,6 +82,11 @@ fn function_node(node_id: NodeId, function_node: FunctionNode, wire_stuff: &mut 
         // we don't have to increase the stack because we are about to pop it all off for the function
     }
     bytecode.push(Bytecode::Call(function_node.function_info.name().unwrap().to_string()));
+    wire_stuff.set_data_info(OutPinId {
+        node: node_id,
+        output: 1,
+    }, *current_stack);
+    *current_stack += 1;
 
 }
 fn field_node(node_id: NodeId, field_node: FieldNode, wire_stuff: &mut SecondWireStuff, bytecode: &mut Vec<Bytecode>, current_stack: &mut usize) {

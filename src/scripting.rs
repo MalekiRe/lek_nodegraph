@@ -337,6 +337,9 @@ impl SnarlViewer<ScriptNode> for Viewer<'_> {
                     unreachable!()
                 };
                 if this_field.field.is_none() {
+                    if f.first().is_none() {
+                        return PinInfo::circle().with_fill(color);
+                    }
                     this_field
                         .field
                         .replace(f.first().as_ref().unwrap().0.clone());
