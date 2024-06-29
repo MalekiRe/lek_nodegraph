@@ -1,19 +1,21 @@
 use std::any::Any;
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use bevy::ecs::component::ComponentId;
 use bevy::ecs::world::FilteredEntityMut;
-use bevy::prelude::{AppTypeRegistry, Mut, QueryBuilder, Reflect, Res, World};
+use bevy::prelude::{AppTypeRegistry, Mut, QueryBuilder, Reflect, Res, Vec3, World};
 use bevy::ptr::PtrMut;
 use bevy::reflect::func::{Arg, ArgList, Return};
-use bevy::reflect::{ReflectFromPtr, TypeInfo};
+use bevy::reflect::{ReflectFromPtr, ReflectMut, ReflectRef, TypeInfo};
 use crate::{functions};
+use crate::indirect_stack::{IndirectStack, StackValue};
 
 #[derive(Debug)]
 pub enum Bytecode<'a> {
-    Push(Arg<'a>),
+    Push(StackValue<'a>),
     Pop,
     Call(String),
-    GetField(usize),
+    GetField(usize, String),
     SetField(usize),
     Query {
         components: Vec<(String, ComponentId, TypeInfo)>,
@@ -26,15 +28,15 @@ impl Clone for Bytecode<'_> {
         match self {
             Bytecode::Push(val) => {
                 match val {
-                    Arg::Owned(owned) => {
-                        Bytecode::Push(Arg::Owned(owned.clone_value()))
+                    StackValue::Owned(owned) => {
+                        Bytecode::Push(StackValue::Owned(owned.clone_value()))
                     }
                     _ => panic!("can't clone if it's not owned"),
                 }
             }
             Bytecode::Pop => Bytecode::Pop,
             Bytecode::Call(name) => Bytecode::Call(name.clone()),
-            Bytecode::GetField(i) => Bytecode::GetField(*i),
+            Bytecode::GetField(i, name) => Bytecode::GetField(*i, name.clone()),
             Bytecode::SetField(i) => Bytecode::SetField(*i),
             Bytecode::Query { components } => Bytecode::Query { components: components.clone() },
             Bytecode::Copy(i) => Bytecode::Copy(*i),
@@ -42,9 +44,10 @@ impl Clone for Bytecode<'_> {
     }
 }
 
+
 pub fn run(mut instructions: Vec<Bytecode>, world: &mut World) {
 
-    println!("{:#?}", instructions);
+    //println!("{:#?}", instructions);
 
     world.resource_scope(|world, registry: Mut<AppTypeRegistry>| {
         let registry = registry.read();
@@ -60,7 +63,7 @@ pub fn run(mut instructions: Vec<Bytecode>, world: &mut World) {
                 let mut query = builder.build();
                 for mut filtered_entity in query.iter_mut(world) {
                     let instructions = instructions.clone();
-                    let mut stack: Vec<Arg> = Vec::new();
+                    let mut indirect_stack = IndirectStack::default();
 
                     let ids = filtered_entity.components().map(|a| a).collect::<Vec<_>>();
 
@@ -74,7 +77,7 @@ pub fn run(mut instructions: Vec<Bytecode>, world: &mut World) {
                                 let reflect_data = registry.get(type_info.type_id()).unwrap();
                                 let reflect_from_ptr = reflect_data.data::<ReflectFromPtr>().unwrap();
                                 let value = unsafe { reflect_from_ptr.as_reflect_mut(ptr) };
-                                stack.push(Arg::Mut(value));
+                                indirect_stack.push_mut(value);
                                 break;
                             }
                         }
@@ -82,45 +85,60 @@ pub fn run(mut instructions: Vec<Bytecode>, world: &mut World) {
                     for instruction in instructions {
                         match instruction {
                             Bytecode::Push(val) => {
-                                stack.push(val);
+                                indirect_stack.push(val);
                             }
                             Bytecode::Pop => {
-                                stack.pop();
+                                indirect_stack.pop();
                             }
                             Bytecode::Call(function) => {
                                 let (func, arg_number) = functions.get_mut(&function).unwrap();
                                 let mut args = ArgList::new();
                                 for _ in 0..*arg_number {
-                                    args = args.push(stack.pop().unwrap());
+                                    args = args.push(match indirect_stack.pop().unwrap() {
+                                        StackValue::Owned(awa) => {
+                                            Arg::Owned(awa)
+                                        }
+                                        StackValue::Mut(uwu) => {
+                                            Arg::Mut(uwu)
+                                        }
+                                        StackValue::InternalReference { name, parent } => {
+                                            unsafe { Arg::Mut(indirect_stack.get_mut_internal_from_ref(parent, name).unwrap()) }
+                                        }
+                                    });
                                 }
                                 match func.call(args).unwrap() {
                                     Return::Unit => {}
-                                    Return::Owned(owned) => stack.push(Arg::Owned(owned)),
-                                    Return::Ref(r#ref) => stack.push(Arg::Ref(r#ref)),
-                                    Return::Mut(r#mut) => stack.push(Arg::Mut(r#mut)),
+                                    Return::Owned(owned) => indirect_stack.push_owned(owned),
+                                    Return::Ref(r#ref) => todo!(),
+                                    Return::Mut(r#mut) => indirect_stack.push_mut(r#mut),
                                 };
                             }
-                            Bytecode::GetField { .. } => todo!(),
+                            Bytecode::GetField(index, field_name) => {
+                                indirect_stack.push_internal_ref(field_name, index);
+                            },
                             Bytecode::SetField(index) => {
-                                let Arg::Owned(first) = stack.pop().unwrap() else { panic!(); };
-                                match stack.get_mut(index).unwrap() {
-                                    Arg::Mut(ref mut awa) => {
-                                        awa.apply(first.as_ref());
+                                let first= indirect_stack.pop().unwrap();
+                                match first {
+                                    StackValue::Owned(owned) => {
+                                        unsafe { indirect_stack.get_mut_internal(index).unwrap().apply(owned.as_ref()) };
                                     }
-                                    _ => panic!(),
+                                    StackValue::Mut(dyn_reflect) => {
+                                        unsafe {
+                                            indirect_stack.get_mut_internal(index).unwrap().apply(dyn_reflect.as_reflect());
+                                        }
+                                    },
+                                    StackValue::InternalReference { name, parent } => {
+                                        unsafe {
+                                            let first = indirect_stack.get_internal_from_ref(parent, name).unwrap();
+                                            indirect_stack.get_mut_internal(index).unwrap().apply(first);
+                                        }
+                                    },
                                 }
-                                stack.push(Arg::Owned(first));
                             },
                             Bytecode::Query { .. } => panic!("shouldn't have a second query"),
                             Bytecode::Copy(index) => {
-                                let val = match stack.get(index).unwrap() {
-                                    Arg::Owned(owned) => {
-                                        owned.clone_value()
-                                    }
-                                    Arg::Ref(_) => todo!(),
-                                    Arg::Mut(_) => todo!(),
-                                };
-                                stack.push(Arg::Owned(val));
+                                let val = unsafe { indirect_stack.get_ref_internal(index).unwrap() }.clone_value();
+                                indirect_stack.push_owned(val);
                             },
                         }
                     }

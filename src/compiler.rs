@@ -6,17 +6,9 @@ use bevy::reflect::func::Arg;
 use bevy::reflect::TypeInfo;
 use egui_snarl::{InPinId, NodeId, OutPinId, Snarl};
 use egui_snarl::ui::PinInfo;
-use crate::scripting::{FieldNode, QueryNode, ScriptNode, SetNode, TypeCreationNode};
+use crate::indirect_stack::StackValue;
+use crate::scripting::{FieldNode, FunctionNode, QueryNode, ScriptNode, SetNode, TypeCreationNode};
 use crate::virtual_machine::Bytecode;
-
-
-pub struct QueryComponent {
-    name: String,
-    id: ComponentId,
-    info: TypeInfo,
-}
-
-
 
 pub fn compile(snarl: &Snarl<ScriptNode>) -> Vec<Bytecode> {
     // we gotta find the roots, rn i'm just gonna look for the query
@@ -52,6 +44,8 @@ pub fn compile(snarl: &Snarl<ScriptNode>) -> Vec<Bytecode> {
 
     let mut tree = compute_data_flow(query_n, &mut nodes_already_computed, &snarl, &wire_stuff);
 
+    //println!("{:#?}", tree);
+
     let mut second_wire_stuff: SecondWireStuff = wire_stuff.into();
 
     let mut bytecode = vec![];
@@ -59,8 +53,8 @@ pub fn compile(snarl: &Snarl<ScriptNode>) -> Vec<Bytecode> {
     loop {
         match tree.script_node {
             ScriptNode::Set(set_n) => set_node(tree.node_id, set_n, &mut second_wire_stuff, &mut bytecode, &mut current_stack),
-            ScriptNode::Field(_) => todo!(),
-            ScriptNode::Function(_) => todo!(),
+            ScriptNode::Field(field_n) => field_node(tree.node_id, field_n, &mut second_wire_stuff, &mut bytecode, &mut current_stack),
+            ScriptNode::Function(function_n) => function_node(tree.node_id, function_n, &mut second_wire_stuff, &mut bytecode, &mut current_stack),
             ScriptNode::TypeCreation(type_creation_n) => type_creation_node(tree.node_id, type_creation_n, &mut second_wire_stuff, &mut bytecode, &mut current_stack),
             ScriptNode::Query(query_n) => query_node(tree.node_id, query_n, &mut second_wire_stuff, &mut bytecode, &mut current_stack)
         }
@@ -76,8 +70,35 @@ pub fn compile(snarl: &Snarl<ScriptNode>) -> Vec<Bytecode> {
 
 }
 
+
+fn function_node(node_id: NodeId, function_node: FunctionNode, wire_stuff: &mut SecondWireStuff, bytecode: &mut Vec<Bytecode>, current_stack: &mut usize) {
+    // skip flow node
+    for i in 1..(function_node.function_info.arg_count()+1) {
+        let arg_node = wire_stuff.get_data_info(InPinId {
+            node: node_id,
+            input: i,
+        }).unwrap();
+        bytecode.push(Bytecode::Copy(arg_node));
+        // we don't have to increase the stack because we are about to pop it all off for the function
+    }
+    bytecode.push(Bytecode::Call(function_node.function_info.name().unwrap().to_string()));
+
+}
 fn field_node(node_id: NodeId, field_node: FieldNode, wire_stuff: &mut SecondWireStuff, bytecode: &mut Vec<Bytecode>, current_stack: &mut usize) {
-    todo!()
+    let struct_node = wire_stuff.get_data_info(InPinId {
+        node: node_id,
+        input: 0,
+    }).unwrap();
+
+    wire_stuff.set_data_info(OutPinId {
+        node: node_id,
+        output: 0,
+    }, *current_stack);
+
+    let name = field_node.name.unwrap();
+    bytecode.push(Bytecode::GetField(struct_node, name));
+    *current_stack += 1;
+
 }
 
 fn set_node(node_id: NodeId, set_node: SetNode, wire_stuff: &mut SecondWireStuff, bytecode: &mut Vec<Bytecode>, current_stack: &mut usize) {
@@ -92,7 +113,7 @@ fn set_node(node_id: NodeId, set_node: SetNode, wire_stuff: &mut SecondWireStuff
     };
     bytecode.push(Bytecode::Copy(wire_stuff.get_data_info(field_get_id).unwrap()));
     bytecode.push(Bytecode::SetField(wire_stuff.get_data_info(field_set_id).unwrap()));
-    bytecode.push(Bytecode::Pop); // pop off what we copied to set.
+    // what we copied to set gets automatically popped off what we copied to set.
 }
 
 fn type_creation_node(node_id: NodeId, type_creation_node: TypeCreationNode, wire_stuff: &mut SecondWireStuff, bytecode: &mut Vec<Bytecode>, current_stack: &mut usize) {
@@ -102,7 +123,7 @@ fn type_creation_node(node_id: NodeId, type_creation_node: TypeCreationNode, wir
     };
     wire_stuff.set_data_info(place_where_type_is_on_stack, *current_stack);
     *current_stack += 1;
-    bytecode.push(Bytecode::Push(Arg::Owned(type_creation_node.value)));
+    bytecode.push(Bytecode::Push(StackValue::Owned(type_creation_node.value)));
 }
 
 fn query_node(node_id: NodeId, query_node: QueryNode, wire_stuff: &mut SecondWireStuff, bytecode: &mut Vec<Bytecode>, current_stack: &mut usize) {
@@ -120,7 +141,37 @@ fn query_node(node_id: NodeId, query_node: QueryNode, wire_stuff: &mut SecondWir
 }
 
 fn compute_data_flow(node_id: NodeId, nodes_already_computed: &mut HashSet<NodeId>, snarl: &Snarl<ScriptNode>, wire_stuff: &WireStuff) -> TreeNode {
+
     nodes_already_computed.insert(node_id);
+    let tree_node = compute_data(node_id, nodes_already_computed, snarl, wire_stuff);
+
+    let can_flow = snarl.get_node(node_id).unwrap().can_flow();
+
+    if !can_flow {
+        panic!("in compute data flow but can't flow")
+    }
+
+    let output_flow = OutPinId {
+        node: node_id,
+        output: 0,
+    };
+
+    match wire_stuff.pin_map.get(&output_flow).unwrap_or(&vec![]).first() {
+        None => {
+            tree_node
+        }
+        Some(next_flow) => {
+            let next_flow = next_flow.node;
+            let next_to_flow = compute_data_flow(next_flow, nodes_already_computed, snarl, wire_stuff);
+            tree_node.push_left(next_to_flow)
+        }
+    }
+}
+
+fn compute_data(node_id: NodeId, nodes_already_computed: &mut HashSet<NodeId>, snarl: &Snarl<ScriptNode>, wire_stuff: &WireStuff) -> TreeNode {
+
+    nodes_already_computed.insert(node_id);
+
     let mut tree_node = TreeNode {
         node_id,
         script_node: snarl.get_node(node_id).unwrap().clone(),
@@ -129,38 +180,33 @@ fn compute_data_flow(node_id: NodeId, nodes_already_computed: &mut HashSet<NodeI
 
     let can_flow = snarl.get_node(node_id).unwrap().can_flow();
 
-    for input_pin_id in wire_stuff.input_map.get(&node_id).unwrap_or(&vec![]) {
-        if can_flow {
-            if input_pin_id.input == 0 {
-                continue;
-            }
+    let mut previous_dependency_node = None;
+
+    for input in wire_stuff.input_map.get(&node_id).unwrap_or(&vec![]) {
+        if can_flow && input.input == 0 {
+            continue; //skip flow nodes
         }
-        let out_pin = wire_stuff.pin_map_2.get(&input_pin_id).unwrap();
-        if nodes_already_computed.contains(&out_pin.node) {
+        let output_pin_id = wire_stuff.pin_map_2.get(input).unwrap();
+        let data_node_dependency = output_pin_id.node;
+        if nodes_already_computed.contains(&data_node_dependency) {
             continue;
         }
-        nodes_already_computed.insert(out_pin.node);
-        tree_node = compute_data_flow(out_pin.node, nodes_already_computed, snarl, wire_stuff).push_left(tree_node);
-    }
-    // TODO when we do if statements or any kind of branch we won't have can flow
-    // We will branch based on flow and create each tree
-    if can_flow {
-        let next_node = match wire_stuff.output_map.get(&node_id) {
-            None => return tree_node,
-            Some(awa) => {
-                awa.first().unwrap()
-            }
-        };
-        let input = wire_stuff.pin_map.get(next_node).unwrap().first().unwrap().node;
-        if nodes_already_computed.contains(&input) {
-            return tree_node;
+        let dependency_tree = compute_data(data_node_dependency, nodes_already_computed, snarl, wire_stuff);
+        if previous_dependency_node.is_none() {
+            previous_dependency_node.replace(dependency_tree);
+        } else {
+            let mut temp = previous_dependency_node.take().unwrap();
+            previous_dependency_node.replace(temp.push_left(dependency_tree));
         }
+    }
 
-        tree_node = tree_node.push_left(compute_data_flow(input, nodes_already_computed, snarl, wire_stuff));
-        tree_node
-        // walk down the zeroth node here last
-    } else {
-        tree_node
+    match previous_dependency_node {
+        None => {
+            tree_node
+        }
+        Some(previous_dependency) => {
+            previous_dependency.push_left(tree_node)
+        }
     }
 }
 

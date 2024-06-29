@@ -2,6 +2,7 @@ mod registry;
 mod scripting;
 mod compiler;
 mod virtual_machine;
+mod indirect_stack;
 
 use crate::registry::{ComponentMap, FunctionRegistry, RegisterFunction, RegistryPlugin};
 use bevy::ecs::component::{ComponentId, Components};
@@ -24,6 +25,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use bevy::ecs::system::SystemId;
 use crate::virtual_machine::run;
+/*use crate::virtual_machine::run;*/
 
 const STRING_COLOR: Color32 = Color32::from_rgb(0x00, 0xb0, 0x00);
 const NUMBER_COLOR: Color32 = Color32::from_rgb(0xb0, 0x00, 0x00);
@@ -57,7 +59,7 @@ fn add_transforms(mut commands: Commands) {
     }
 }
 
-fn print_transforms(transforms: Query<(Entity, &Transform)>) {
+fn print_transforms(transforms: Query<(Entity, &Transform), Changed<Transform>>) {
     for (entity, t) in transforms.iter() {
         println!("entity: {}, translation: {:?}", entity, t.translation);
     }

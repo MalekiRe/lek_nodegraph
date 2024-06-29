@@ -54,8 +54,8 @@ impl SetNode {
 }
 #[derive(Clone, Debug)]
 pub struct FieldNode {
-    field: Option<TypeInfo>,
-    name: Option<String>,
+    pub field: Option<TypeInfo>,
+    pub name: Option<String>,
 }
 
 impl FieldNode {
@@ -115,7 +115,7 @@ impl FieldNode {
 }
 #[derive(Clone, Debug)]
 pub struct FunctionNode {
-    function_info: FunctionInfo,
+    pub function_info: FunctionInfo,
 }
 
 impl FunctionNode {
